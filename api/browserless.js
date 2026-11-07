@@ -1,10 +1,11 @@
 // api/browserless.js
 // POST { url, token? }  →  text/html
-// Wraps Browserless /chromium/content. CORS-enabled so the
-// frontend can call it directly from any origin.
+// Uses /chromium/content with a "fully loaded" wait strategy:
+//   - navigation waits for networkidle2 (≤2 in-flight requests for 500ms)
+//   - 2s extra render window after idle
+//   - bestAttempt=true so partial HTML is returned instead of erroring
 
 module.exports = async function handler(req, res) {
-  // ── CORS ──────────────────────────────────────────────
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -13,11 +14,9 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'POST')    return res.status(405).json({ error: 'POST only' });
 
-  // ── Input ─────────────────────────────────────────────
   const { url, token } = req.body || {};
   if (!url) return res.status(400).json({ error: 'url is required' });
 
-  // Token: request body OR env var (env wins if both are absent from body)
   const blToken = token || process.env.BROWSERLESS_TOKEN;
   if (!blToken) {
     return res.status(400).json({
@@ -26,9 +25,6 @@ module.exports = async function handler(req, res) {
     });
   }
 
-  // Cheap scheme validation. (Not SSRF protection — browserless
-  // does the actual fetch, so we never connect to the user URL
-  // ourselves. This just rejects nonsense before we bill a unit.)
   let parsed;
   try { parsed = new URL(url); }
   catch { return res.status(400).json({ error: 'Invalid URL' }); }
@@ -36,37 +32,51 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: 'Only http(s) URLs allowed' });
   }
 
-  // ── Upstream call ─────────────────────────────────────
+  // ── Wait strategy ─────────────────────────────────────
+  // timeout=50000             → overall browserless session budget
+  // gotoOptions.timeout=45000 → navigation-specific budget
+  // networkidle2              → ≤2 in-flight requests for 500ms
+  // waitForTimeout=2000       → extra render window after idle
+  // bestAttempt=true          → return partial HTML instead of throwing
+  //
+  // Worst case: 45s + 2s = 47s, under both browserless's 50s
+  // session cap and Vercel's 60s maxDuration.
   const endpoint =
     'https://production-sfo.browserless.io/chromium/content' +
-    `?blockAds=false&timeout=60000&token=${encodeURIComponent(blToken)}`;
+    `?blockAds=false&timeout=50000&token=${encodeURIComponent(blToken)}`;
 
   const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(new Error('upstream timeout')), 65000);
+  const timer = setTimeout(() => ctrl.abort(new Error('upstream timeout')), 55000);
 
   try {
     const r = await fetch(endpoint, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ url }),
-      signal:  ctrl.signal,
+      body:    JSON.stringify({
+        url,
+        gotoOptions: {
+          waitUntil: 'networkidle2',
+          timeout:   45000,
+        },
+        waitForTimeout: 2000,
+        bestAttempt:    true,
+      }),
+      signal: ctrl.signal,
     });
 
     const html = await r.text();
 
     if (!r.ok) {
-      // Browserless errors are JSON: { error, message, ... }
-      // or plain text — surface both.
       return res.status(r.status).json({
-        error: 'Browserless upstream error',
+        error:  'Browserless upstream error',
         status: r.status,
-        body: html.slice(0, 500),
+        body:   html.slice(0, 500),
       });
     }
 
-    // Success → raw HTML straight through
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('X-Source', 'browserless/chromium/content');
+    res.setHeader('X-Wait-Strategy', 'networkidle2+2000');
     return res.status(200).send(html);
   } catch (err) {
     const msg = err?.name === 'AbortError' ? 'upstream timeout' : (err?.message || String(err));

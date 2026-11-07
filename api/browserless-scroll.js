@@ -28,40 +28,36 @@ module.exports = async function handler(req, res) {
   // ── The interaction script ──────────────────────────
   // Budget: 35s navigation + up to ~15s scroll + 2s settle ≈ 52s
   const script = `
-    module.exports = async ({ page }) => {
-      await page.goto(${JSON.stringify(url)}, {
-        waitUntil: 'networkidle2',
-        timeout: 35000,
+  async ({ page }) => {
+    await page.goto(${JSON.stringify(url)}, {
+      waitUntil: 'networkidle2',
+      timeout: 35000,
+    });
+
+    await page.evaluate(async () => {
+      await new Promise(resolve => {
+        let iter = 0, lastHeight = 0, stuck = 0;
+        const STEP = window.innerHeight * 0.8;
+        const timer = setInterval(() => {
+          iter++;
+          window.scrollBy(0, STEP);
+          const h = document.body.scrollHeight;
+          if (h === lastHeight) {
+            if (++stuck >= 3) { clearInterval(timer); resolve(); }
+          } else {
+            stuck = 0;
+            lastHeight = h;
+          }
+          if (iter >= 75) { clearInterval(timer); resolve(); }
+        }, 200);
       });
+    });
 
-      // Progressive scroll. Stops when:
-      //   - scrollHeight hasn't changed for 3 consecutive ticks (lazy loads exhausted), OR
-      //   - 75 iterations have elapsed (~15s cap).
-      await page.evaluate(async () => {
-        await new Promise(resolve => {
-          let iter = 0, lastHeight = 0, stuck = 0;
-          const STEP = window.innerHeight * 0.8;
-          const timer = setInterval(() => {
-            iter++;
-            window.scrollBy(0, STEP);
-            const h = document.body.scrollHeight;
-            if (h === lastHeight) {
-              if (++stuck >= 3) { clearInterval(timer); resolve(); }
-            } else {
-              stuck = 0;
-              lastHeight = h;
-            }
-            if (iter >= 75) { clearInterval(timer); resolve(); }
-          }, 200);
-        });
-      });
+    await new Promise(r => setTimeout(r, 2000));
 
-      // Let late-arriving content settle
-      await new Promise(r => setTimeout(r, 2000));
-
-      return await page.content();
-    };
-  `;
+    return await page.content();
+  }
+`;
 
   const endpoint =
     'https://production-sfo.browserless.io/chromium/function' +

@@ -1,14 +1,5 @@
 // api/screenshot.js
 // POST { url, token?, mobile?, colorScheme? }  →  { screenshot }
-// Uses /chromium/function for full emulation control.
-//
-// Defaults (Option C — no assumptions imposed):
-//   mobile:      false  → desktop viewport (1280×800), desktop UA
-//   colorScheme: absent → no prefers-color-scheme override (Chrome default = light)
-//
-// Overrides:
-//   mobile: true                 → iPhone viewport + mobile UA
-//   colorScheme: 'dark' | 'light' → forces prefers-color-scheme
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -16,14 +7,14 @@ module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Access-Control-Max-Age', '86400');
 
-  if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method !== 'POST')    return res.status(405).json({ error: 'POST only' });
+  if (req.method === 'OPTIONS') { return res.status(204).end(); }
+  if (req.method !== 'POST')    { return res.status(405).json({ error: 'POST only' }); }
 
   const { url, token, mobile = false, colorScheme } = req.body || {};
-  if (!url) return res.status(400).json({ error: 'url is required' });
+  if (!url) { return res.status(400).json({ error: 'url is required' }); }
 
   const blToken = token || process.env.BROWSERLESS_TOKEN;
-  if (!blToken) return res.status(400).json({ error: 'No browserless token' });
+  if (!blToken) { return res.status(400).json({ error: 'No browserless token' }); }
 
   let parsed;
   try { parsed = new URL(url); }
@@ -32,7 +23,6 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: 'Only http(s) URLs allowed' });
   }
 
-  // ── Viewport / UA ────────────────────────────────────
   const viewport = mobile
     ? { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true }
     : { width: 1280, height: 800, deviceScaleFactor: 1 };
@@ -41,15 +31,12 @@ module.exports = async function handler(req, res) {
     ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
     : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-  // ── Color scheme ─────────────────────────────────────
-  // Only emit an emulateMediaFeatures call when a scheme was
-  // explicitly requested. Absent → Chrome's default (light).
   const emulateMedia = colorScheme
     ? `await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: ${JSON.stringify(colorScheme)} }]);`
     : '';
 
   const script = `
-    async ({ page }) => {
+    return async ({ page }) => {
       await page.setViewport(${JSON.stringify(viewport)});
       await page.setUserAgent(${JSON.stringify(ua)});
       ${emulateMedia}
@@ -61,7 +48,7 @@ module.exports = async function handler(req, res) {
 
       const shot = await page.screenshot({ fullPage: false, type: 'jpeg', quality: 80 });
       return { screenshot: shot.toString('base64') };
-    }
+    };
   `;
 
   const endpoint =

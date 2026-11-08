@@ -1,5 +1,6 @@
 // api/screenshot.js
-// POST { url, token?, mobile?, colorScheme? }  →  { screenshot }
+// POST { url, token? }  →  { screenshot }
+// Uses /chromium/screenshot — no code string, no evaluator quirks.
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -10,7 +11,7 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') { return res.status(204).end(); }
   if (req.method !== 'POST')    { return res.status(405).json({ error: 'POST only' }); }
 
-  const { url, token, mobile = false, colorScheme } = req.body || {};
+  const { url, token } = req.body || {};
   if (!url) { return res.status(400).json({ error: 'url is required' }); }
 
   const blToken = token || process.env.BROWSERLESS_TOKEN;
@@ -23,36 +24,8 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: 'Only http(s) URLs allowed' });
   }
 
-  const viewport = mobile
-    ? { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true }
-    : { width: 1280, height: 800, deviceScaleFactor: 1 };
-
-  const ua = mobile
-    ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
-    : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-
-  const emulateMedia = colorScheme
-    ? `await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: ${JSON.stringify(colorScheme)} }]);`
-    : '';
-
-  const script = `
-    return async ({ page }) => {
-      await page.setViewport(${JSON.stringify(viewport)});
-      await page.setUserAgent(${JSON.stringify(ua)});
-      ${emulateMedia}
-      await page.goto(${JSON.stringify(url)}, {
-        waitUntil: 'networkidle2',
-        timeout: 35000,
-      });
-      await new Promise(r => setTimeout(r, 2000));
-
-      const shot = await page.screenshot({ fullPage: false, type: 'jpeg', quality: 80 });
-      return { screenshot: shot.toString('base64') };
-    };
-  `;
-
   const endpoint =
-    'https://production-sfo.browserless.io/chromium/function' +
+    'https://production-sfo.browserless.io/chromium/screenshot' +
     `?token=${encodeURIComponent(blToken)}`;
 
   const ctrl  = new AbortController();
@@ -61,31 +34,29 @@ module.exports = async function handler(req, res) {
   try {
     const r = await fetch(endpoint, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ code: script }),
-      signal:  ctrl.signal,
+      headers: { 'Content-Type': 'application/json', 'Accept': 'image/jpeg' },
+      body: JSON.stringify({
+        url,
+        gotoOptions:    { waitUntil: 'networkidle2', timeout: 35000 },
+        waitForTimeout: 2000,
+        bestAttempt:    true,
+        options:        { type: 'jpeg', quality: 80, fullPage: false },
+        viewport:       { width: 1280, height: 800, deviceScaleFactor: 1 },
+      }),
+      signal: ctrl.signal,
     });
 
-    const text = await r.text();
-
     if (!r.ok) {
+      const text = await r.text();
       return res.status(r.status).json({
-        error:  'Browserless function error',
+        error:  'Browserless screenshot error',
         status: r.status,
         body:   text.slice(0, 500),
       });
     }
 
-    let json;
-    try { json = JSON.parse(text); }
-    catch { return res.status(502).json({ error: 'Response was not JSON', body: text.slice(0, 300) }); }
-
-    const data = json?.data;
-    if (!data || typeof data.screenshot !== 'string') {
-      return res.status(502).json({ error: 'No screenshot in response', body: text.slice(0, 300) });
-    }
-
-    return res.status(200).json({ screenshot: data.screenshot });
+    const buf = Buffer.from(await r.arrayBuffer());
+    return res.status(200).json({ screenshot: buf.toString('base64') });
   } catch (err) {
     const msg = err?.name === 'AbortError' ? 'upstream timeout' : (err?.message || String(err));
     return res.status(502).json({ error: 'Backend failed', message: msg });

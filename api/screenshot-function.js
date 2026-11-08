@@ -39,8 +39,13 @@ export default async ({ page }) => {
   });
   await new Promise(r => setTimeout(r, 2000));
 
-  const shot = await page.screenshot({ fullPage: false, type: 'jpeg', quality: 80 });
-  return { screenshot: shot.toString('base64') };
+  const shot = await page.screenshot({
+    fullPage: false,
+    type: 'jpeg',
+    quality: 80,
+    encoding: 'base64',
+  });
+  return { screenshot: shot };
 };
 `;
 

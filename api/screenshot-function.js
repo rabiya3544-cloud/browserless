@@ -1,7 +1,6 @@
 // api/screenshot-function.js
-// POST { url, token? }  →  { screenshot }
-// Same interface as /api/screenshot, but uses /chromium/function.
-// Kept separate so a failure here doesn't affect the working endpoint.
+// POST { url, token?, mobile?, colorScheme? }  →  { screenshot }
+// Uses /chromium/function with full emulation control.
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -12,7 +11,7 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') { return res.status(204).end(); }
   if (req.method !== 'POST')    { return res.status(405).json({ error: 'POST only' }); }
 
-  const { url, token } = req.body || {};
+  const { url, token, mobile = false, colorScheme } = req.body || {};
   if (!url) { return res.status(400).json({ error: 'url is required' }); }
 
   const blToken = token || process.env.BROWSERLESS_TOKEN;
@@ -25,14 +24,23 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: 'Only http(s) URLs allowed' });
   }
 
-  // ESM default-export — the form implied by the three prior
-  // failures together:
-  //   module.exports  → "module is not defined"      (not CJS)
-  //   bare arrow      → "code is not a function"     (bare expression, not a body)
-  //   return bare     → "Illegal return statement"   (top-level return in module)
+  const viewport = mobile
+    ? { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true }
+    : { width: 1280, height: 800, deviceScaleFactor: 1 };
+
+  const ua = mobile
+    ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+    : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+  const emulateMedia = colorScheme
+    ? `await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: ${JSON.stringify(colorScheme)} }]);`
+    : '';
+
   const script = `
 export default async ({ page }) => {
-  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
+  await page.setViewport(${JSON.stringify(viewport)});
+  await page.setUserAgent(${JSON.stringify(ua)});
+  ${emulateMedia}
   await page.goto(${JSON.stringify(url)}, {
     waitUntil: 'networkidle2',
     timeout: 35000,
@@ -78,7 +86,6 @@ export default async ({ page }) => {
     try { json = JSON.parse(text); }
     catch { return res.status(502).json({ error: 'Response was not JSON', body: text.slice(0, 300) }); }
 
-    // Try the shapes /chromium/function has used across versions.
     const data = json?.data ?? json?.result ?? json;
     const screenshot = data?.screenshot ?? data?.data?.screenshot;
 
